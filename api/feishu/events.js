@@ -1,7 +1,31 @@
-const axios = require('axios');
-const columnMap = require('../../data/column-map.json');
-
 const FEISHU_BASE = 'https://open.feishu.cn/open-apis';
+
+const columnMap = {
+  factory: ['厂区'],
+  applicant: ['申请人', '申请人 Required'],
+  user: ['使用人', '使用人 User'],
+  designer: ['设计', '设计者', '设计 Design'],
+  purchaseDate: ['请购时间', '请购时间 Purchasing Time'],
+  supplier: ['厂商', '厂商 Supplier'],
+  fixtureCode: ['治具编码', '系统编码', '系统编码 Fixture code'],
+  fixtureName: ['治具名称', '治具名称 Fixture name'],
+  quantity: ['数量', '数量 Qty.', 'Qty.'],
+  outsourceStatus: ['治具状态', '发包状态', '发包状态 Flow status'],
+  dueDate: ['交货日期', '预计交货日期', '预计交货日期 Estimated delivery date'],
+  currentStatus: ['治具现状态', '治具现状态 Status', 'Status'],
+  arrivalConfirm: ['到货确认人', '确认到货人'],
+  actualDeliveryDate: ['厂商寄走时间', '厂商寄走时间 Supplier delivery time'],
+  poDate: ['PO单下单时间', 'PO单下单时间PO Time', 'PO Time'],
+  remark: ['备注', '备注 Remark', 'Remark'],
+  prNo: ['PR单号', 'PR单号 PR Number', 'PR Number'],
+  poNo: ['PO单号']
+};
+
+function sendJson(res, status, data) {
+  res.statusCode = status;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.end(JSON.stringify(data));
+}
 
 function normalizeHeader(value) {
   return String(value ?? '')
@@ -66,6 +90,105 @@ function parseDateValue(value) {
   return text;
 }
 
+async function feishuFetch(url, options = {}) {
+  const resp = await fetch(url, {
+    ...options,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      ...(options.headers || {})
+    }
+  });
+  const data = await resp.json();
+  if (data.code !== 0) {
+    throw new Error(data.msg || JSON.stringify(data));
+  }
+  return data;
+}
+
+async function getTenantAccessToken() {
+  if (!process.env.FEISHU_APP_ID || !process.env.FEISHU_APP_SECRET) {
+    throw new Error('缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET');
+  }
+
+  const data = await feishuFetch(`${FEISHU_BASE}/auth/v3/tenant_access_token/internal`, {
+    method: 'POST',
+    body: JSON.stringify({
+      app_id: process.env.FEISHU_APP_ID,
+      app_secret: process.env.FEISHU_APP_SECRET
+    })
+  });
+  return data.tenant_access_token;
+}
+
+async function resolveSpreadsheetToken(tenantToken) {
+  if (process.env.FEISHU_SPREADSHEET_TOKEN) return process.env.FEISHU_SPREADSHEET_TOKEN;
+  if (!process.env.FEISHU_WIKI_NODE_TOKEN) {
+    throw new Error('缺少 FEISHU_SPREADSHEET_TOKEN 或 FEISHU_WIKI_NODE_TOKEN');
+  }
+
+  const url = `${FEISHU_BASE}/wiki/v2/spaces/get_node?token=${encodeURIComponent(process.env.FEISHU_WIKI_NODE_TOKEN)}`;
+  const data = await feishuFetch(url, {
+    headers: { Authorization: `Bearer ${tenantToken}` }
+  });
+  const node = data?.data?.node || data?.data || {};
+  const objToken = node.obj_token || node.objToken;
+  if (!objToken) throw new Error('Wiki 节点没有返回 obj_token');
+  return objToken;
+}
+
+async function getSheetsMeta(spreadsheetToken, tenantToken) {
+  try {
+    const data = await feishuFetch(`${FEISHU_BASE}/sheets/v2/spreadsheets/${spreadsheetToken}/metainfo`, {
+      headers: { Authorization: `Bearer ${tenantToken}` }
+    });
+    return (data?.data?.sheets || []).map(s => ({
+      sheetId: s.sheetId || s.sheet_id,
+      title: s.title || s.name || s.sheetName || s.sheet_name || s.sheetId || s.sheet_id
+    })).filter(s => s.sheetId);
+  } catch {
+    const data = await feishuFetch(`${FEISHU_BASE}/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/query`, {
+      headers: { Authorization: `Bearer ${tenantToken}` }
+    });
+    return (data?.data?.sheets || []).map(s => ({
+      sheetId: s.sheet_id || s.sheetId,
+      title: s.title || s.name || s.sheet_id || s.sheetId
+    })).filter(s => s.sheetId);
+  }
+}
+
+function parseRangesConfig(sheetsMeta = []) {
+  const raw = String(process.env.FEISHU_SHEET_RANGES || 'ALL').trim();
+  if (!raw || raw.toUpperCase() === 'ALL' || raw === '全部') {
+    return sheetsMeta.map(s => ({
+      factory: deriveFactoryFromSheet(s.title),
+      title: s.title,
+      sheetId: s.sheetId,
+      range: `${s.sheetId}!A1:Z5000`
+    }));
+  }
+
+  return raw.split(',').map(s => s.trim()).filter(Boolean).map(item => {
+    const [label, rangePart] = item.includes('|') ? item.split('|') : ['', item];
+    const range = rangePart.trim();
+    const sheetId = range.split('!')[0];
+    const meta = sheetsMeta.find(s => s.sheetId === sheetId) || {};
+    return {
+      factory: label.trim() || deriveFactoryFromSheet(meta.title || sheetId),
+      title: meta.title || label.trim() || sheetId,
+      sheetId,
+      range
+    };
+  });
+}
+
+async function readFeishuRange(spreadsheetToken, tenantToken, range) {
+  const url = `${FEISHU_BASE}/sheets/v2/spreadsheets/${spreadsheetToken}/values/${encodeURIComponent(range)}`;
+  const data = await feishuFetch(url, {
+    headers: { Authorization: `Bearer ${tenantToken}` }
+  });
+  return data?.data?.valueRange?.values || [];
+}
+
 function mapRowsToFixtures(values, sheetInfo = {}) {
   if (!Array.isArray(values) || values.length < 2) return [];
   const headers = values[0].map(normalizeHeader);
@@ -111,89 +234,6 @@ function mapRowsToFixtures(values, sheetInfo = {}) {
       poNo: cleanText(get('poNo'))
     };
   }).filter(Boolean);
-}
-
-async function getTenantAccessToken() {
-  const appId = process.env.FEISHU_APP_ID;
-  const appSecret = process.env.FEISHU_APP_SECRET;
-  if (!appId || !appSecret) throw new Error('缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET');
-
-  const resp = await axios.post(`${FEISHU_BASE}/auth/v3/tenant_access_token/internal`, {
-    app_id: appId,
-    app_secret: appSecret
-  });
-  if (resp.data.code !== 0) throw new Error(`获取 tenant_access_token 失败：${resp.data.msg}`);
-  return resp.data.tenant_access_token;
-}
-
-async function resolveSpreadsheetToken(tenantToken) {
-  if (process.env.FEISHU_SPREADSHEET_TOKEN) return process.env.FEISHU_SPREADSHEET_TOKEN;
-  const wikiNodeToken = process.env.FEISHU_WIKI_NODE_TOKEN;
-  if (!wikiNodeToken) throw new Error('缺少 FEISHU_SPREADSHEET_TOKEN 或 FEISHU_WIKI_NODE_TOKEN');
-
-  const url = `${FEISHU_BASE}/wiki/v2/spaces/get_node?token=${encodeURIComponent(wikiNodeToken)}`;
-  const resp = await axios.get(url, { headers: { Authorization: `Bearer ${tenantToken}` } });
-  if (resp.data.code !== 0) throw new Error(`解析 Wiki 节点失败：${resp.data.msg}`);
-  const node = resp.data?.data?.node || resp.data?.data || {};
-  const objToken = node.obj_token || node.objToken;
-  if (!objToken) throw new Error('Wiki 节点没有返回 obj_token');
-  return objToken;
-}
-
-async function getSheetsMeta(spreadsheetToken, tenantToken) {
-  const headers = { Authorization: `Bearer ${tenantToken}` };
-  try {
-    const url = `${FEISHU_BASE}/sheets/v2/spreadsheets/${spreadsheetToken}/metainfo`;
-    const resp = await axios.get(url, { headers });
-    if (resp.data.code === 0) {
-      return (resp.data?.data?.sheets || []).map(s => ({
-        sheetId: s.sheetId || s.sheet_id,
-        title: s.title || s.name || s.sheetName || s.sheet_name || s.sheetId || s.sheet_id
-      })).filter(s => s.sheetId);
-    }
-  } catch (e) {
-    console.warn(`v2 metainfo 获取失败，尝试 v3：${e.message}`);
-  }
-
-  const url = `${FEISHU_BASE}/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/query`;
-  const resp = await axios.get(url, { headers });
-  if (resp.data.code !== 0) throw new Error(`获取工作表列表失败：${resp.data.msg}`);
-  return (resp.data?.data?.sheets || []).map(s => ({
-    sheetId: s.sheet_id || s.sheetId,
-    title: s.title || s.name || s.sheet_id || s.sheetId
-  })).filter(s => s.sheetId);
-}
-
-function parseRangesConfig(sheetsMeta = []) {
-  const raw = String(process.env.FEISHU_SHEET_RANGES || 'ALL').trim();
-  if (!raw || raw.toUpperCase() === 'ALL' || raw === '全部') {
-    return sheetsMeta.map(s => ({
-      factory: deriveFactoryFromSheet(s.title),
-      title: s.title,
-      sheetId: s.sheetId,
-      range: `${s.sheetId}!A1:Z5000`
-    }));
-  }
-
-  return raw.split(',').map(s => s.trim()).filter(Boolean).map(item => {
-    const [label, rangePart] = item.includes('|') ? item.split('|') : ['', item];
-    const range = rangePart.trim();
-    const sheetId = range.split('!')[0];
-    const meta = sheetsMeta.find(s => s.sheetId === sheetId) || {};
-    return {
-      factory: label.trim() || deriveFactoryFromSheet(meta.title || sheetId),
-      title: meta.title || label.trim() || sheetId,
-      sheetId,
-      range
-    };
-  });
-}
-
-async function readFeishuRange(spreadsheetToken, tenantToken, range) {
-  const url = `${FEISHU_BASE}/sheets/v2/spreadsheets/${spreadsheetToken}/values/${encodeURIComponent(range)}`;
-  const resp = await axios.get(url, { headers: { Authorization: `Bearer ${tenantToken}` } });
-  if (resp.data.code !== 0) throw new Error(`读取飞书范围失败 ${range}：${resp.data.msg}`);
-  return resp.data?.data?.valueRange?.values || [];
 }
 
 async function loadFixturesLive() {
@@ -301,14 +341,15 @@ function formatReply(items, query) {
 }
 
 async function replyText(tenantToken, messageId, text) {
-  const url = `${FEISHU_BASE}/im/v1/messages/${messageId}/reply`;
-  const resp = await axios.post(url, {
-    msg_type: 'text',
-    content: JSON.stringify({ text })
-  }, {
-    headers: { Authorization: `Bearer ${tenantToken}` }
+  const data = await feishuFetch(`${FEISHU_BASE}/im/v1/messages/${messageId}/reply`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tenantToken}` },
+    body: JSON.stringify({
+      msg_type: 'text',
+      content: JSON.stringify({ text })
+    })
   });
-  if (resp.data.code !== 0) throw new Error(`回复消息失败：${resp.data.msg}`);
+  return data;
 }
 
 function verifyToken(body) {
@@ -320,32 +361,34 @@ function verifyToken(body) {
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.status(200).send('Feishu fixture query bot is running.');
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/plain; charset=utf-8');
+    res.end('Feishu fixture query bot is running.');
     return;
   }
 
   const body = req.body || {};
 
-// 飞书请求地址校验：必须最快返回，避免 3 秒超时
-if (body.type === 'url_verification' && body.challenge) {
-  return res.status(200).json({
-    challenge: body.challenge
-  });
-}
+  // 飞书请求地址校验：这里必须极速返回，否则飞书会报“请求3秒超时”。
+  if (body.type === 'url_verification' && body.challenge) {
+    sendJson(res, 200, { challenge: body.challenge });
+    return;
+  }
 
-if (!verifyToken(body)) {
-  return res.status(403).json({
-    code: 403,
-    msg: 'invalid verification token'
-  });
-}
+  if (!verifyToken(body)) {
+    sendJson(res, 403, { code: 403, msg: 'invalid verification token' });
+    return;
+  }
 
   const eventType = body?.header?.event_type;
   const event = body?.event;
   if (eventType !== 'im.message.receive_v1' || !event?.message?.message_id) {
-    res.status(200).json({ ok: true, ignored: true });
+    sendJson(res, 200, { ok: true, ignored: true });
     return;
   }
+
+  // 先回复飞书 200，避免事件回调超时；查询和回复在后台继续执行。
+  sendJson(res, 200, { ok: true, accepted: true });
 
   try {
     const query = parseMessageText(event);
@@ -353,10 +396,7 @@ if (!verifyToken(body)) {
     const matched = searchFixtures(data, query);
     const reply = formatReply(matched, query);
     await replyText(tenantToken, event.message.message_id, reply);
-    res.status(200).json({ ok: true });
   } catch (err) {
     console.error(err.message);
-    if (err.response?.data) console.error(JSON.stringify(err.response.data));
-    res.status(200).json({ ok: false, msg: err.message });
   }
 };
