@@ -1,0 +1,20 @@
+{
+  "factory": ["厂区"],
+  "applicant": ["申请人", "申请人 Required"],
+  "user": ["使用人", "使用人 User"],
+  "designer": ["设计", "设计者", "设计 Design"],
+  "purchaseDate": ["请购时间", "请购时间 Purchasing Time"],
+  "supplier": ["厂商", "厂商 Supplier"],
+  "fixtureCode": ["治具编码", "系统编码", "系统编码 Fixture code"],
+  "fixtureName": ["治具名称", "治具名称 Fixture name"],
+  "quantity": ["数量", "数量 Qty.", "Qty."],
+  "outsourceStatus": ["治具状态", "发包状态", "发包状态 Flow status"],
+  "dueDate": ["交货日期", "预计交货日期", "预计交货日期 Estimated delivery date"],
+  "currentStatus": ["治具现状态", "治具现状态 Status", "Status"],
+  "arrivalConfirm": ["到货确认人", "确认到货人", "到货确认人 （格式：刘进新/日期）", "确认到货人 （格式：子俊/日期）"],
+  "actualDeliveryDate": ["厂商寄走时间", "厂商寄走时间 Supplier delivery time"],
+  "poDate": ["PO单下单时间", "PO单下单时间PO Time", "PO Time"],
+  "remark": ["备注", "备注 Remark", "Remark"],
+  "prNo": ["PR单号", "PR单号 PR Number", "PR Number"],
+  "poNo": ["PO单号"]
+}

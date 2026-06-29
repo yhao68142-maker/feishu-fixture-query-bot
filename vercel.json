@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/feishu/events.js": {
+      "maxDuration": 30
+    }
+  }
+}
