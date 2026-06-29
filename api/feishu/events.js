@@ -325,15 +325,20 @@ module.exports = async function handler(req, res) {
   }
 
   const body = req.body || {};
-  if (body.type === 'url_verification' && body.challenge) {
-    res.status(200).json({ challenge: body.challenge });
-    return;
-  }
 
-  if (!verifyToken(body)) {
-    res.status(403).json({ code: 403, msg: 'invalid verification token' });
-    return;
-  }
+// 飞书请求地址校验：必须最快返回，避免 3 秒超时
+if (body.type === 'url_verification' && body.challenge) {
+  return res.status(200).json({
+    challenge: body.challenge
+  });
+}
+
+if (!verifyToken(body)) {
+  return res.status(403).json({
+    code: 403,
+    msg: 'invalid verification token'
+  });
+}
 
   const eventType = body?.header?.event_type;
   const event = body?.event;
